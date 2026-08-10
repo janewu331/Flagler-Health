@@ -22,7 +22,6 @@ library(survival)
 library(broom)
 library(ggplot2)
 
-# This notebook is intended to live in /src and be run from the repository root.
 project_root <- normalizePath("..", mustWork = FALSE)
 knitr::opts_knit$set(root.dir = project_root)
 
