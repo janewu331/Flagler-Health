@@ -19,7 +19,6 @@ library(dplyr)
 library(ggplot2)
 library(tidyr)
 
-# This notebook is intended to live in /src and be run from the repository root.
 project_root <- normalizePath("..", mustWork = FALSE)
 knitr::opts_knit$set(root.dir = project_root)
 
@@ -61,12 +60,7 @@ knitr::kable(
 
 # 2. Longitudinal Patient Examples
 
-The original analysis included two example patient trajectories. Patient identifiers and direct message quotations are intentionally not stored in this public-facing notebook.
-
-To reproduce these plots locally with authorized data, set the following environment variables before knitting:
-
-- `FLAGLER_RETAINED_EXAMPLE_ID`
-- `FLAGLER_DROPOUT_EXAMPLE_ID`
+The original analysis included two example patient trajectories. Patient identifiers and direct message quotations are intentionally not stored in this notebook.
 
 ```{r patient-trajectory-helper}
 plot_pain_trajectory <- function(data, patient_id, outcome_label) {
