@@ -1,0 +1,207 @@
+---
+title: "Flagler Health: Exploratory Analysis"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 8,
+  fig.height = 5
+)
+
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# This notebook is intended to live in /src and be run from the repository root.
+project_root <- normalizePath("..", mustWork = FALSE)
+knitr::opts_knit$set(root.dir = project_root)
+
+data_dir <- file.path(project_root, "data")
+metrics_path <- file.path(data_dir, "pain_rtm_longitudinal.csv")
+```
+
+# 1. Load and Prepare Data
+
+```{r load-data}
+metrics <- read.csv(metrics_path, stringsAsFactors = FALSE)
+
+# Standardize blank strings as missing values.
+metrics[metrics == ""] <- NA
+
+metrics <- metrics %>%
+  mutate(
+    date = as.Date(date),
+    nprs_pain_val = as.numeric(nprs_pain_val),
+    across(c(mobility_val, mood_val, sleep_val), as.numeric)
+  )
+```
+
+## Missingness Summary
+
+```{r missingness}
+missingness <- tibble(
+  variable = names(metrics),
+  missing_pct = colMeans(is.na(metrics)) * 100
+) %>%
+  arrange(desc(missing_pct))
+
+knitr::kable(
+  missingness,
+  digits = 1,
+  col.names = c("Variable", "Missing (%)")
+)
+```
+
+# 2. Longitudinal Patient Examples
+
+The original analysis included two example patient trajectories. Patient identifiers and direct message quotations are intentionally not stored in this public-facing notebook.
+
+To reproduce these plots locally with authorized data, set the following environment variables before knitting:
+
+- `FLAGLER_RETAINED_EXAMPLE_ID`
+- `FLAGLER_DROPOUT_EXAMPLE_ID`
+
+```{r patient-trajectory-helper}
+plot_pain_trajectory <- function(data, patient_id, outcome_label) {
+  patient_pain <- data %>%
+    filter(patient_id == !!patient_id, !is.na(nprs_pain_val)) %>%
+    arrange(date)
+
+  if (nrow(patient_pain) == 0) {
+    stop("No pain observations found for the supplied patient ID.")
+  }
+
+  # Highlight meaningful points without exposing message text or hard-coded dates.
+  highlights <- bind_rows(
+    patient_pain %>% slice_min(date, n = 1, with_ties = FALSE) %>% mutate(event = "First observation"),
+    patient_pain %>% slice_max(nprs_pain_val, n = 1, with_ties = FALSE) %>% mutate(event = "Peak pain"),
+    patient_pain %>% slice_max(date, n = 1, with_ties = FALSE) %>% mutate(event = "Last observation")
+  ) %>%
+    distinct(date, nprs_pain_val, .keep_all = TRUE)
+
+  ggplot(patient_pain, aes(x = date, y = nprs_pain_val)) +
+    geom_line(linewidth = 0.9) +
+    geom_point(size = 2.5) +
+    geom_point(data = highlights, size = 3) +
+    geom_text(
+      data = highlights,
+      aes(label = event),
+      vjust = -0.8,
+      check_overlap = TRUE
+    ) +
+    scale_y_continuous(limits = c(0, 10), breaks = 0:10) +
+    labs(
+      title = paste("Pain Score Over Time —", outcome_label),
+      subtitle = "Patient identifier redacted",
+      x = "Date",
+      y = "Pain Score (NPRS)"
+    ) +
+    theme_minimal() +
+    theme(panel.grid.minor = element_blank())
+}
+```
+
+```{r retained-example, eval=TRUE}
+retained_patient_id <- Sys.getenv("FLAGLER_RETAINED_EXAMPLE_ID")
+
+if (nzchar(retained_patient_id)) {
+  print(plot_pain_trajectory(metrics, retained_patient_id, "Patient Still Enrolled"))
+} else {
+  message("Retained-patient example skipped: FLAGLER_RETAINED_EXAMPLE_ID is not set.")
+}
+```
+
+```{r dropout-example, eval=TRUE}
+dropout_patient_id <- Sys.getenv("FLAGLER_DROPOUT_EXAMPLE_ID")
+
+if (nzchar(dropout_patient_id)) {
+  print(plot_pain_trajectory(metrics, dropout_patient_id, "Patient Dropped Off"))
+} else {
+  message("Dropout-patient example skipped: FLAGLER_DROPOUT_EXAMPLE_ID is not set.")
+}
+```
+
+# 3. Aggregate Exploratory Analysis
+
+## Distribution of Pain Scores
+
+```{r pain-distribution}
+ggplot(metrics, aes(x = nprs_pain_val)) +
+  geom_bar() +
+  scale_x_continuous(breaks = 0:10) +
+  labs(
+    title = "Distribution of Reported Pain Scores",
+    x = "Pain Score (NPRS)",
+    y = "Number of Reports"
+  ) +
+  theme_minimal()
+```
+
+## Engagement Summary
+
+```{r engagement-summary}
+engagement <- metrics %>%
+  filter(!is.na(chat_id), !is.na(date)) %>%
+  group_by(chat_id) %>%
+  summarise(
+    total_reports = n(),
+    avg_pain = mean(nprs_pain_val, na.rm = TRUE),
+    duration_days = as.numeric(max(date) - min(date)),
+    .groups = "drop"
+  )
+
+engagement_overview <- engagement %>%
+  summarise(
+    conversations = n(),
+    median_reports = median(total_reports, na.rm = TRUE),
+    median_duration_days = median(duration_days, na.rm = TRUE),
+    median_avg_pain = median(avg_pain, na.rm = TRUE)
+  )
+
+knitr::kable(engagement_overview, digits = 1)
+```
+
+## Sleep Quality and Pain
+
+```{r sleep-pain}
+ggplot(metrics, aes(x = sleep_val, y = nprs_pain_val)) +
+  geom_jitter(alpha = 0.25, width = 0.08, height = 0.08) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Sleep Quality vs. Reported Pain",
+    x = "Sleep Score",
+    y = "Pain Score (NPRS)"
+  ) +
+  theme_minimal()
+```
+
+## Monthly Pain Trend
+
+```{r monthly-trend}
+monthly_trend <- metrics %>%
+  filter(!is.na(date)) %>%
+  mutate(month = format(date, "%Y-%m")) %>%
+  group_by(month) %>%
+  summarise(
+    avg_pain = mean(nprs_pain_val, na.rm = TRUE),
+    reports = sum(!is.na(nprs_pain_val)),
+    .groups = "drop"
+  )
+
+ggplot(monthly_trend, aes(x = month, y = avg_pain, group = 1)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2.5) +
+  labs(
+    title = "Average Reported Pain by Month",
+    x = "Month",
+    y = "Mean Pain Score"
+  ) +
+  theme_minimal()
+```

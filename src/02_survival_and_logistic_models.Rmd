@@ -1,0 +1,455 @@
+---
+title: "Flagler Health: Survival and Logistic Modeling"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 8,
+  fig.height = 5
+)
+
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(survival)
+library(broom)
+library(ggplot2)
+
+# This notebook is intended to live in /src and be run from the repository root.
+project_root <- normalizePath("..", mustWork = FALSE)
+knitr::opts_knit$set(root.dir = project_root)
+
+data_dir <- file.path(project_root, "data")
+patient_path <- file.path(data_dir, "patients_w_baseline.csv")
+sentiment_path <- file.path(data_dir, "patient_daily_sentiment.csv")
+```
+
+# 1. Prepare Patient-Level Modeling Data
+
+```{r prepare-data}
+patients_raw <- read.csv(patient_path, stringsAsFactors = FALSE)
+
+patients <- patients_raw %>%
+  transmute(
+    patient_id,
+    days_enrolled,
+    dropout = ifelse(is_enrolled, 0L, 1L),
+    pain = baseline_nprs_pain_val,
+    mobility = factor(baseline_mobility_val),
+    mood = factor(baseline_mood_val),
+    sleep = factor(baseline_sleep_val),
+    procedure = factor(baseline_procedure),
+    diag_chapter = factor(baseline_diag_chapter)
+  ) %>%
+  drop_na(
+    patient_id,
+    days_enrolled,
+    dropout,
+    pain,
+    mobility,
+    mood,
+    sleep,
+    procedure,
+    diag_chapter
+  ) %>%
+  mutate(
+    procedure_2group = if_else(
+      procedure == "Evaluation and Management",
+      "Evaluation and Management",
+      "Other"
+    ),
+    procedure_3group = case_when(
+      procedure == "Evaluation and Management" ~ "Evaluation and Management",
+      procedure == "Surgery" ~ "Surgery",
+      TRUE ~ "Other"
+    ),
+    diagnosis_2group = if_else(
+      diag_chapter == "Diseases of the Musculoskeletal System and Connective Tissue",
+      "Musculoskeletal",
+      "Other"
+    ),
+    procedure_2group = factor(
+      procedure_2group,
+      levels = c("Evaluation and Management", "Other")
+    ),
+    procedure_3group = factor(
+      procedure_3group,
+      levels = c("Evaluation and Management", "Surgery", "Other")
+    ),
+    diagnosis_2group = factor(
+      diagnosis_2group,
+      levels = c("Musculoskeletal", "Other")
+    )
+  )
+
+stopifnot(all(patients$dropout %in% c(0L, 1L)))
+```
+
+# 2. Procedure Group Summary
+
+```{r procedure-summary}
+procedure_summary <- patients %>%
+  count(procedure, name = "count") %>%
+  arrange(desc(count))
+
+kable(procedure_summary, caption = "Baseline Procedure Groups")
+
+procedure_2group_summary <- patients %>%
+  count(procedure_2group, name = "count")
+
+kable(
+  procedure_2group_summary,
+  caption = "Baseline Procedure Groups — Two-Group Version"
+)
+```
+
+# 3. Kaplan-Meier Analysis
+
+## Overall Retention Curve
+
+```{r km-overall}
+overall_km <- survfit(Surv(days_enrolled, dropout) ~ 1, data = patients)
+
+plot(
+  overall_km,
+  main = "Kaplan-Meier Estimate of RTM Retention",
+  xlab = "Days",
+  ylab = "Proportion Enrolled"
+)
+```
+
+## RTM Baseline Metrics
+
+```{r km-baseline-metrics, fig.height=12}
+par(mfrow = c(3, 1))
+
+km_mobility <- survfit(Surv(days_enrolled, dropout) ~ mobility, data = patients)
+plot(km_mobility, main = "Retention by Baseline Mobility", xlab = "Days", ylab = "Proportion Enrolled")
+legend("bottomright", legend = levels(patients$mobility), lty = 1, bty = "n")
+
+km_mood <- survfit(Surv(days_enrolled, dropout) ~ mood, data = patients)
+plot(km_mood, main = "Retention by Baseline Mood", xlab = "Days", ylab = "Proportion Enrolled")
+legend("bottomright", legend = levels(patients$mood), lty = 1, bty = "n")
+
+km_sleep <- survfit(Surv(days_enrolled, dropout) ~ sleep, data = patients)
+plot(km_sleep, main = "Retention by Baseline Sleep", xlab = "Days", ylab = "Proportion Enrolled")
+legend("bottomright", legend = levels(patients$sleep), lty = 1, bty = "n")
+
+par(mfrow = c(1, 1))
+```
+
+## Pain Quartiles
+
+```{r pain-groups}
+pain_breaks <- unique(
+  quantile(
+    patients$pain,
+    probs = c(0, 0.25, 0.50, 0.75, 1),
+    na.rm = TRUE
+  )
+)
+
+pain_labels <- paste0("Q", seq_len(length(pain_breaks) - 1))
+
+patients <- patients %>%
+  mutate(
+    pain_group = cut(
+      pain,
+      breaks = pain_breaks,
+      labels = pain_labels,
+      include.lowest = TRUE
+    )
+  )
+
+km_pain <- survfit(Surv(days_enrolled, dropout) ~ pain_group, data = patients)
+
+plot(
+  km_pain,
+  main = "Retention by Baseline Pain Quartile",
+  xlab = "Days",
+  ylab = "Proportion Enrolled"
+)
+legend("bottomright", legend = levels(patients$pain_group), lty = 1, bty = "n")
+```
+
+## Procedure Groups
+
+```{r km-procedure, fig.height=9}
+par(mfrow = c(2, 1))
+
+km_procedure_2group <- survfit(
+  Surv(days_enrolled, dropout) ~ procedure_2group,
+  data = patients
+)
+plot(
+  km_procedure_2group,
+  main = "Retention by Procedure Group — Two Groups",
+  xlab = "Days",
+  ylab = "Proportion Enrolled"
+)
+legend("bottomright", legend = levels(patients$procedure_2group), lty = 1, bty = "n")
+
+km_procedure_3group <- survfit(
+  Surv(days_enrolled, dropout) ~ procedure_3group,
+  data = patients
+)
+plot(
+  km_procedure_3group,
+  main = "Retention by Procedure Group — Three Groups",
+  xlab = "Days",
+  ylab = "Proportion Enrolled"
+)
+legend("bottomright", legend = levels(patients$procedure_3group), lty = 1, bty = "n")
+
+par(mfrow = c(1, 1))
+```
+
+## Diagnosis Groups
+
+```{r km-diagnosis}
+km_diagnosis <- survfit(
+  Surv(days_enrolled, dropout) ~ diagnosis_2group,
+  data = patients
+)
+
+plot(
+  km_diagnosis,
+  main = "Retention by Diagnosis Group",
+  xlab = "Days",
+  ylab = "Proportion Enrolled"
+)
+legend("bottomright", legend = levels(patients$diagnosis_2group), lty = 1, bty = "n")
+```
+
+# 4. Log-Rank Tests
+
+```{r log-rank-tests}
+log_rank_tests <- list(
+  mobility = survdiff(Surv(days_enrolled, dropout) ~ mobility, data = patients),
+  mood = survdiff(Surv(days_enrolled, dropout) ~ mood, data = patients),
+  sleep = survdiff(Surv(days_enrolled, dropout) ~ sleep, data = patients),
+  pain_group = survdiff(Surv(days_enrolled, dropout) ~ pain_group, data = patients),
+  procedure_2group = survdiff(Surv(days_enrolled, dropout) ~ procedure_2group, data = patients),
+  procedure_3group = survdiff(Surv(days_enrolled, dropout) ~ procedure_3group, data = patients),
+  diagnosis_2group = survdiff(Surv(days_enrolled, dropout) ~ diagnosis_2group, data = patients)
+)
+
+log_rank_summary <- bind_rows(
+  lapply(names(log_rank_tests), function(test_name) {
+    tibble(
+      variable = test_name,
+      p_value = glance(log_rank_tests[[test_name]])$p.value
+    )
+  })
+)
+
+kable(log_rank_summary, digits = 4, caption = "Log-Rank Test Summary")
+```
+
+# 5. Cox Proportional Hazards Models
+
+## Baseline Clinical Metrics
+
+```{r cox-baseline}
+patients <- patients %>%
+  mutate(
+    pain_centered = pain - mean(pain, na.rm = TRUE),
+    pain_centered_squared = pain_centered^2
+  )
+
+cox_baseline <- coxph(
+  Surv(days_enrolled, dropout) ~
+    pain_centered + pain_centered_squared + mobility + mood + sleep,
+  data = patients
+)
+
+kable(
+  tidy(cox_baseline, exponentiate = TRUE, conf.int = TRUE),
+  digits = 3,
+  caption = "Cox Model — Baseline Clinical Metrics"
+)
+```
+
+## Procedure Group
+
+```{r cox-procedure}
+cox_procedure <- coxph(
+  Surv(days_enrolled, dropout) ~
+    pain + mobility + mood + sleep + procedure_2group,
+  data = patients
+)
+
+kable(
+  tidy(cox_procedure, exponentiate = TRUE, conf.int = TRUE),
+  digits = 3,
+  caption = "Cox Model — Procedure Group"
+)
+```
+
+## Procedure and Diagnosis
+
+```{r cox-procedure-diagnosis}
+cox_final <- coxph(
+  Surv(days_enrolled, dropout) ~
+    pain + mobility + mood + sleep + procedure_2group + diagnosis_2group,
+  data = patients
+)
+
+kable(
+  tidy(cox_final, exponentiate = TRUE, conf.int = TRUE),
+  digits = 3,
+  caption = "Final Cox Proportional Hazards Model"
+)
+```
+
+# 6. Procedure × Diagnosis Exploration
+
+```{r procedure-diagnosis-groups}
+patients <- patients %>%
+  mutate(
+    procedure_diagnosis_group = case_when(
+      procedure_2group == "Evaluation and Management" & diagnosis_2group == "Musculoskeletal" ~
+        "Evaluation and Management + Musculoskeletal",
+      procedure_2group == "Other" & diagnosis_2group == "Musculoskeletal" ~
+        "Other Procedures + Musculoskeletal",
+      procedure_2group == "Evaluation and Management" & diagnosis_2group == "Other" ~
+        "Evaluation and Management + Other Diagnoses",
+      procedure_2group == "Other" & diagnosis_2group == "Other" ~
+        "Other Procedures + Other Diagnoses"
+    )
+  )
+
+combined_group_counts <- patients %>%
+  count(procedure_diagnosis_group, name = "count")
+
+kable(combined_group_counts, caption = "Procedure and Diagnosis Combination Groups")
+
+km_combined <- survfit(
+  Surv(days_enrolled, dropout) ~ procedure_diagnosis_group,
+  data = patients
+)
+
+plot(
+  km_combined,
+  main = "Retention by Procedure and Diagnosis Group",
+  xlab = "Days",
+  ylab = "Proportion Enrolled"
+)
+legend(
+  "bottomright",
+  legend = levels(factor(patients$procedure_diagnosis_group)),
+  lty = 1,
+  cex = 0.75,
+  bty = "n"
+)
+
+combined_log_rank <- survdiff(
+  Surv(days_enrolled, dropout) ~ procedure_diagnosis_group,
+  data = patients
+)
+
+glance(combined_log_rank)
+```
+
+# 7. Final Logistic Regression with Sentiment
+
+The sentiment file is created by `03_sentiment_analysis.py`. The cleaned Python script writes a continuous signed `sentiment_score`, so this notebook can use that feature directly instead of reconstructing it from a majority label.
+
+```{r sentiment-summary}
+sentiment <- read.csv(sentiment_path, stringsAsFactors = FALSE)
+
+required_sentiment_columns <- c("patient_id", "sentiment_score")
+missing_columns <- setdiff(required_sentiment_columns, names(sentiment))
+
+if (length(missing_columns) > 0) {
+  stop(
+    paste(
+      "Sentiment file is missing required columns:",
+      paste(missing_columns, collapse = ", ")
+    )
+  )
+}
+
+sentiment_summary <- sentiment %>%
+  group_by(patient_id) %>%
+  summarise(
+    avg_sentiment = mean(sentiment_score, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+model_data <- patients %>%
+  left_join(sentiment_summary, by = "patient_id") %>%
+  drop_na(avg_sentiment)
+```
+
+A valid nested model comparison requires both models to use the same observations. Therefore, both models below are fit on `model_data` after removing patients without a usable sentiment score.
+
+```{r logistic-models}
+logit_without_sentiment <- glm(
+  dropout ~ pain + mobility + mood + sleep + procedure_2group + diagnosis_2group,
+  data = model_data,
+  family = binomial()
+)
+
+logit_with_sentiment <- glm(
+  dropout ~ pain + mobility + mood + sleep + procedure_2group + diagnosis_2group + avg_sentiment,
+  data = model_data,
+  family = binomial()
+)
+
+kable(
+  tidy(logit_with_sentiment, exponentiate = TRUE, conf.int = TRUE),
+  digits = 3,
+  caption = "Final Logistic Regression — Odds Ratios"
+)
+```
+
+## Model Comparison
+
+```{r logistic-model-comparison}
+likelihood_ratio_test <- anova(
+  logit_without_sentiment,
+  logit_with_sentiment,
+  test = "Chisq"
+)
+
+likelihood_ratio_test
+
+AIC(
+  Without_Sentiment = logit_without_sentiment,
+  With_Sentiment = logit_with_sentiment
+)
+```
+
+# 8. Dropout Rate by Procedure Group
+
+```{r procedure-dropout-rate}
+procedure_dropout <- patients %>%
+  group_by(procedure_2group) %>%
+  summarise(
+    dropout_rate = mean(dropout),
+    patients = n(),
+    .groups = "drop"
+  )
+
+ggplot(procedure_dropout, aes(x = procedure_2group, y = dropout_rate)) +
+  geom_col() +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  labs(
+    title = "Dropout Rate by Procedure Group",
+    x = "Procedure Group",
+    y = "Dropout Rate"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 15, hjust = 1),
+    plot.title = element_text(face = "bold")
+  )
+```
