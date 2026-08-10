@@ -9,4 +9,4 @@ The analysis used four primary sources:
 - Patient–Medical Assistant message transcripts
 - Insurance claims containing procedure and diagnosis codes
 
-The analysis scripts expect authorized local copies of the required processed data files in this directory. The repository `.gitignore` prevents common patient-level data formats from being committed.
+The analysis scripts expect authorized local copies of the required processed data files in this directory.
